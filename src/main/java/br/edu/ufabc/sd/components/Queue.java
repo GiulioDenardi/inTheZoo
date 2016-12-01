@@ -1,6 +1,5 @@
 package br.edu.ufabc.sd.components;
 
-import java.nio.ByteBuffer;
 import java.util.List;
 
 import org.apache.zookeeper.CreateMode;
@@ -20,46 +19,39 @@ public class Queue extends Client {
      *
      * @param address
      * @param name
+     * @param lyric 
      */
-    public Queue (String address, String name) {
+    public Queue (String address, String name, boolean shallLogin) {
         super(address);
-        this.root = name;
-        // Create ZK node name
-        if (zk != null) {
-            try {
-                Stat s = zk.exists(root, false);
-                if (s == null) {
-                    zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE,
-                            CreateMode.PERSISTENT);
-                }
-            } catch (KeeperException e) {
-                System.out
-                        .println("Keeper exception when instantiating queue: "
-                                + e.toString());
-            } catch (InterruptedException e) {
-                System.out.println("Interrupted exception");
-            }
+        if (shallLogin) {
+        	login();
+        	this.root = loggedUser + name;
+        } else {
+        	this.root = name;
         }
     }
 
     /**
      * Add element to the queue.
      *
-     * @param i
+     * @param lyric
      * @return
      */
 
-    public boolean produce(int i) throws KeeperException, InterruptedException{
-        ByteBuffer b = ByteBuffer.allocate(4);
-        byte[] value;
+    public boolean produce(String song, String lyric) throws KeeperException, InterruptedException{
+    	if (zk != null) {
+    		if (zk.exists(root, false) == null) {
+    			zk.create(root, lyric.getBytes(), Ids.OPEN_ACL_UNSAFE,
+    					CreateMode.PERSISTENT);
+    		}
+    		
+            zk.create(root + "/" + song, lyric.getBytes(), Ids.OPEN_ACL_UNSAFE,
+                    CreateMode.PERSISTENT);
 
-        // Add child with value i
-        b.putInt(i);
-        value = b.array();
-        zk.create(root + "/element", value, Ids.OPEN_ACL_UNSAFE,
-                    CreateMode.PERSISTENT_SEQUENTIAL);
-
-        return true;
+            return true;
+    	} else {
+    		return false;
+    	}
     }
 
 
@@ -70,32 +62,37 @@ public class Queue extends Client {
      * @throws KeeperException
      * @throws InterruptedException
      */
-    public int consume() throws KeeperException, InterruptedException{
-        int retvalue = -1;
+    public String consume() throws KeeperException, InterruptedException{
         Stat stat = null;
 
-        // Get the first element available
         while (true) {
             synchronized (mutex) {
                 List<String> list = zk.getChildren(root, true);
                 if (list.size() == 0) {
-                    System.out.println("Going to wait");
+            		System.out.println("Esperando por mais músicas...");
                     mutex.wait();
                 } else {
-                    Integer min = new Integer(list.get(0).substring(7));
-                    for(String s : list){
-                        Integer tempValue = new Integer(s.substring(7));
-                        //System.out.println("Temporary value: " + tempValue);
-                        if(tempValue < min) min = tempValue;
-                    }
-                    System.out.println("Temporary value: " + root + "/element" + min);
-                    byte[] b = zk.getData(root + "/element" + min,
+                	String song = list.get(list.size()-1);
+                	
+                	if (song.equals("__F__") && list.size() > 1) {
+                		song = list.get(list.size()-2);
+                	}
+                	
+                	if (!song.equals("__F__")) {
+                		System.out.println("Capturando música: " + song);
+                		
+                		byte[] b = zk.getData(root + "/" + song,
                                 false, stat);
-                    zk.delete(root + "/element" + min, 0);
-                    ByteBuffer buffer = ByteBuffer.wrap(b);
-                    retvalue = buffer.getInt();
-
-                    return retvalue;
+                		zk.delete(root + "/" + song, 0);
+                		return new String(b);
+                	} else {
+                		System.out.println("Essas foram as músicas enviadas!");
+                		byte[] b = zk.getData(root + "/" + song,
+                                false, stat);
+                		zk.delete(root + "/" + song, 0);
+                		zk.delete(root, 0);
+                        return new String(b);
+                	}
                 }
             }
         }

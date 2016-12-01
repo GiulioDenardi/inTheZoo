@@ -1,14 +1,21 @@
 package br.edu.ufabc.sd;
 
 import java.io.IOException;
+import java.math.BigInteger;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Scanner;
 
+import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.Stat;
 
 import br.edu.ufabc.sd.components.Barrier;
+import br.edu.ufabc.sd.components.Lock;
 import br.edu.ufabc.sd.components.Queue;
 
 public class Client implements Watcher {
@@ -17,6 +24,8 @@ public class Client implements Watcher {
     protected static Integer mutex;
     protected static Scanner reader = new Scanner(System.in);
     protected static final String host = "localhost:2181";
+    protected static String loggedUser;
+	private static boolean showMessage = true;
 
     protected String root;
 
@@ -37,7 +46,6 @@ public class Client implements Watcher {
 
     synchronized public void process(WatchedEvent event) {
         synchronized (mutex) {
-            System.out.println("Process: " + event.getType());
             mutex.notify();
         }
     }
@@ -48,7 +56,7 @@ public class Client implements Watcher {
     			+ ""
     			+ "[B] Gerar uma música gratuita.\n"
     			+ "[Q] Enviar uma música para algum colega estilo Snapchat\n"
-    			+ "[L] Lock\n"
+    			+ "[L] Pegar a música do dia! (Pode haver filas devido a permitirmos apenas 1 download por vez.)\n"
     			+ "[E] Leader Election");
     	
     	char option = reader.next().charAt(0);
@@ -58,10 +66,10 @@ public class Client implements Watcher {
     		startBarrier();
     		break;
     	case ('Q'):
-//    		startQueue();
+    		startQueue();
     		break;
     	case ('L'):
-//    		startLock();
+    		startLock();
     		break;
     	case ('E'):
 //    		startLeaderElection();
@@ -70,18 +78,99 @@ public class Client implements Watcher {
     		System.out.println("Você não digitou um valor válido!");
     	}
     	
-    	
-    	System.out.println("Obrigado por utilizar nosso serviço!");
-    	
-    	reader.close();
-//    	switch 
-//        if (args[0].equals("qTest"))
-//            queueTest(args);
-//        else
-//            barrierTest(args);
+    	if (showMessage) {
+    		System.out.println("Obrigado por utilizar nosso serviço!");
+        	
+        	reader.close();
+    	}
     }
 
-    private static void startBarrier() {
+	private static void startLock() {
+		System.out.println("Você gostaria de ficar na fila para receber a música do dia?\n"
+				+ "Pode demorar algum tempo dependendo da quantidade de pessoas que estão a pedindo! [true/false]");
+		
+		boolean check = reader.nextBoolean();
+		
+		if (check) {
+			Lock lock = new Lock(host);
+			
+			try {
+				showMessage = lock.lock();
+			} catch (KeeperException e) {
+				e.printStackTrace();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		} else {
+			System.out.println("Tudo bem! Pode passar mais tarde! Ficamos no aguardo de seu retorno :)");
+		}
+	}
+
+	protected void login() {
+		System.out.println("Favor entrar com seu nome de usuário:");
+		String usuario = "/" + reader.next();
+		
+		try {
+			Stat exists = zk.exists(usuario, false);
+    		if (exists == null) {
+				zk.create(usuario, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+    		}
+    		
+    		exists = zk.exists(usuario + "/songs", false);
+    		if (exists == null) {
+    			zk.create(usuario + "/songs", new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+    		}
+    		loggedUser = usuario;
+		} catch (KeeperException e) {
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+	}
+
+    private static void startQueue() {
+    	String hash = new BigInteger(130, new SecureRandom()).toString(32);
+    	Queue q = new Queue(host, "/songs/" + hash, true);
+    	
+    	System.out.println("Agora basta enviar este código para seu amigo para que ele possa ouvir as músicas:\n"
+				+ Base64.getEncoder().encodeToString((loggedUser + "/songs/" + hash).getBytes()));
+    	
+		Boolean sendSong = true;
+		
+		while (sendSong == true) {
+			System.out.println("Digite o nome da música:");
+			reader.nextLine();
+			String song = reader.nextLine();
+			
+			System.out.println("\nDigite a letra da música (Escreva \"esc\" (sem aspas) para terminar de escrever):");
+			String line;
+			String lyric = "";
+			while (!(line = reader.nextLine()).equals("esc")) {
+				lyric += line + "\n";
+			}
+			
+			try {
+				q.produce(song, lyric);
+			} catch (KeeperException e) {
+				e.printStackTrace();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			
+			System.out.println("Gostaria de enviar mais músicas? [true/false]");
+			sendSong = reader.nextBoolean();
+		}
+		
+		try {
+			q.produce("__F__", "_F_");
+		} catch (KeeperException e) {
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private static void startBarrier() {
     	int size = 3;
 		System.out.println("Para gerar uma música gratuita você precisa convidar "
 				+ size 
@@ -125,67 +214,4 @@ public class Client implements Watcher {
         }
 	}
 
-	public static void queueTest(String args[]) {
-        Queue q = new Queue(args[1], "/app1");
-
-        System.out.println("Input: " + args[1]);
-        int i;
-        Integer max = new Integer(args[2]);
-
-        if (args[3].equals("p")) {
-            System.out.println("Producer");
-            for (i = 0; i < max; i++)
-                try{
-                    q.produce(10 + i);
-                } catch (KeeperException e){
-
-                } catch (InterruptedException e){
-
-                }
-        } else {
-            System.out.println("Consumer");
-
-            for (i = 0; i < max; i++) {
-                try{
-                    int r = q.consume();
-                    System.out.println("Item: " + r);
-                } catch (KeeperException e){
-                    i--;
-                } catch (InterruptedException e){
-
-                }
-            }
-        }
-    }
-
-//    public static void barrierTest(String args[]) {
-//        Barrier b = new Barrier(args[1], args[3], new Integer(args[2]));
-//        try{
-//            boolean flag = b.enter();
-//            System.out.println("Entered barrier: " + args[2]);
-//            if(!flag) System.out.println("Error when entering the barrier");
-//        } catch (KeeperException e){
-//        	System.err.println(e);
-//        } catch (InterruptedException e){
-//        	System.err.println(e);
-//        }
-//
-//        //Aqui fica o código realizado no barrier.
-//        try {
-//			System.out.println("Enviando parte " + b.getFileData() + " do arquivo...");
-//		} catch (KeeperException e) {
-//			System.err.println(e);
-//		} catch (InterruptedException e) {
-//			System.err.println(e);
-//		}
-//        
-//        try{
-//            b.leave();
-//        } catch (KeeperException e){
-//        	System.err.println(e);
-//        } catch (InterruptedException e){
-//        	System.err.println(e);
-//        }
-//        System.out.println("Left barrier");
-//    }
 }
